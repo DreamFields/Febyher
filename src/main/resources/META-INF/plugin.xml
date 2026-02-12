@@ -1,15 +1,36 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>org.jetbrains.plugins.template</id>
-    <name>IntelliJ Platform Plugin Template</name>
-    <vendor>JetBrains</vendor>
+    <id>org.febyher</id>
+    <name>Febyher AI</name>
+    <vendor>Febyher</vendor>
 
     <depends>com.intellij.modules.platform</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="org.jetbrains.plugins.template.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="org.jetbrains.plugins.template.startup.MyProjectActivity" />
+        <!-- AI 聊天工具窗口 -->
+        <toolWindow
+            factoryClass="org.febyher.chat.ChatToolWindowFactory"
+            id="Febyher AI"
+            anchor="right"
+            secondary="true"
+            icon="/icons/ai-icon.svg"/>
+
+        <!-- 项目启动活动 -->
+        <postStartupActivity implementation="org.febyher.startup.MyProjectActivity" />
+
+        <!-- LLM 服务管理器 -->
+        <projectService serviceImplementation="org.febyher.llm.LLMServiceManager"/>
+
+        <!-- 应用设置 -->
+        <applicationService serviceImplementation="org.febyher.settings.CopilotSettings"/>
+
+        <!-- 设置面板 -->
+        <applicationConfigurable
+            parentId="tools"
+            instance="org.febyher.settings.CopilotSettingsConfigurable"
+            id="org.febyher.settings.CopilotSettingsConfigurable"
+            displayName="Febyher AI"/>
     </extensions>
 </idea-plugin>
