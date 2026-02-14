@@ -31,6 +31,10 @@ class CopilotSettingsConfigurable : Configurable {
     // DeepSeek配置
     private var deepseekApiKeyField: JBPasswordField? = null
     private var deepseekApiUrlField: JBTextField? = null
+    
+    // NVIDIA配置
+    private var nvidiaApiKeyField: JBPasswordField? = null
+    private var nvidiaApiUrlField: JBTextField? = null
 
     override fun getDisplayName(): String = "Febyher AI"
 
@@ -46,6 +50,11 @@ class CopilotSettingsConfigurable : Configurable {
         val deepseekResult = createProviderPanel("DeepSeek", DeepSeekDefaults.defaultUrl)
         deepseekApiKeyField = deepseekResult.apiKeyField
         deepseekApiUrlField = deepseekResult.apiUrlField
+        
+        // NVIDIA配置面板
+        val nvidiaResult = createProviderPanel("NVIDIA NIM", NvidiaDefaults.defaultUrl)
+        nvidiaApiKeyField = nvidiaResult.apiKeyField
+        nvidiaApiUrlField = nvidiaResult.apiUrlField
 
         settingsPanel = FormBuilder.createFormBuilder()
             .addComponent(createHeaderLabel("配置各AI服务提供商的API密钥"))
@@ -54,6 +63,8 @@ class CopilotSettingsConfigurable : Configurable {
             .addComponent(moonshotResult.panel)
             .addSeparator()
             .addComponent(deepseekResult.panel)
+            .addSeparator()
+            .addComponent(nvidiaResult.panel)
             .addComponentFillVertically(JPanel(), 0)
             .panel
             .apply {
@@ -117,11 +128,14 @@ class CopilotSettingsConfigurable : Configurable {
         
         val moonshotConfig = settings.getProviderConfig(AIProvider.MOONSHOT)
         val deepseekConfig = settings.getProviderConfig(AIProvider.DEEPSEEK)
+        val nvidiaConfig = settings.getProviderConfig(AIProvider.NVIDIA)
         
         return moonshotApiKeyField?.password?.concatToString() != moonshotConfig.apiKey ||
                moonshotApiUrlField?.text != moonshotConfig.apiUrl ||
                deepseekApiKeyField?.password?.concatToString() != deepseekConfig.apiKey ||
-               deepseekApiUrlField?.text != deepseekConfig.apiUrl
+               deepseekApiUrlField?.text != deepseekConfig.apiUrl ||
+               nvidiaApiKeyField?.password?.concatToString() != nvidiaConfig.apiKey ||
+               nvidiaApiUrlField?.text != nvidiaConfig.apiUrl
     }
 
     override fun apply() {
@@ -138,6 +152,12 @@ class CopilotSettingsConfigurable : Configurable {
         deepseekConfig.apiKey = deepseekApiKeyField?.password?.concatToString() ?: ""
         deepseekConfig.apiUrl = deepseekApiUrlField?.text ?: ""
         settings.setProviderConfig(AIProvider.DEEPSEEK, deepseekConfig)
+        
+        // 保存NVIDIA配置
+        val nvidiaConfig = settings.getProviderConfig(AIProvider.NVIDIA)
+        nvidiaConfig.apiKey = nvidiaApiKeyField?.password?.concatToString() ?: ""
+        nvidiaConfig.apiUrl = nvidiaApiUrlField?.text ?: ""
+        settings.setProviderConfig(AIProvider.NVIDIA, nvidiaConfig)
     }
 
     override fun reset() {
@@ -152,6 +172,11 @@ class CopilotSettingsConfigurable : Configurable {
         val deepseekConfig = settings.getProviderConfig(AIProvider.DEEPSEEK)
         deepseekApiKeyField?.text = deepseekConfig.apiKey
         deepseekApiUrlField?.text = deepseekConfig.apiUrl
+        
+        // 加载NVIDIA配置
+        val nvidiaConfig = settings.getProviderConfig(AIProvider.NVIDIA)
+        nvidiaApiKeyField?.text = nvidiaConfig.apiKey
+        nvidiaApiUrlField?.text = nvidiaConfig.apiUrl
     }
 
     override fun disposeUIResources() {

@@ -1,5 +1,9 @@
 package org.febyher.settings
 
+import com.intellij.credentialStore.CredentialAttributes
+import com.intellij.credentialStore.Credentials
+import com.intellij.credentialStore.generateServiceName
+import com.intellij.ide.passwordSafe.PasswordSafe
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -11,7 +15,8 @@ import com.intellij.util.xmlb.XmlSerializerUtil
  */
 enum class AIProvider(val displayName: String) {
     MOONSHOT("Moonshot (Kimi)"),
-    DEEPSEEK("DeepSeek");
+    DEEPSEEK("DeepSeek"),
+    NVIDIA("NVIDIA NIM");
     
     companion object {
         fun fromName(name: String): AIProvider = 
@@ -60,13 +65,33 @@ object DeepSeekDefaults : ProviderDefaults {
 }
 
 /**
+ * NVIDIA NIM默认配置
+ */
+object NvidiaDefaults : ProviderDefaults {
+    override val defaultUrl = "https://integrate.api.nvidia.com/v1/chat/completions"
+    override val defaultModel = "moonshotai/kimi-k2.5"
+    override val defaultTemperature = 1.0
+    override val availableModels = listOf(
+        "moonshotai/kimi-k2.5",
+        "meta/llama-3.1-405b-instruct",
+        "meta/llama-3.1-70b-instruct",
+        "meta/llama-3.1-8b-instruct",
+        "mistralai/mixtral-8x7b-instruct-v0.1",
+        "mistralai/mistral-large-2-instruct",
+        "nvidia/nemotron-4-340b-instruct",
+        "google/gemma-2-27b-it"
+    )
+}
+
+/**
  * Provider配置注册表 - 集中管理所有Provider的默认配置
  */
 object ProviderDefaultsRegistry {
     
     private val registry = mutableMapOf<AIProvider, ProviderDefaults>(
         AIProvider.MOONSHOT to MoonshotDefaults,
-        AIProvider.DEEPSEEK to DeepSeekDefaults
+        AIProvider.DEEPSEEK to DeepSeekDefaults,
+        AIProvider.NVIDIA to NvidiaDefaults
     )
     
     /**
@@ -105,24 +130,76 @@ data class ProviderConfig(
 )
 
 /**
+ * 安全密钥存储助手
+ */
+object SecureKeyStorage {
+    private const val SERVICE_NAME = "Febyher AI"
+    
+    /**
+     * 为指定Provider创建凭据属性
+     */
+    private fun createCredentialAttributes(provider: AIProvider): CredentialAttributes {
+        return CredentialAttributes(
+            generateServiceName(SERVICE_NAME, "${provider.name.lowercase()}-api-key")
+        )
+    }
+    
+    /**
+     * 安全存储API Key
+     */
+    fun storeApiKey(provider: AIProvider, apiKey: String) {
+        val attributes = createCredentialAttributes(provider)
+        val credentials = Credentials(provider.name, apiKey)
+        PasswordSafe.instance.set(attributes, credentials)
+    }
+    
+    /**
+     * 获取存储的API Key
+     */
+    fun getApiKey(provider: AIProvider): String? {
+        val attributes = createCredentialAttributes(provider)
+        val credentials = PasswordSafe.instance.get(attributes)
+        return credentials?.password?.toString()
+    }
+    
+    /**
+     * 删除存储的API Key
+     */
+    fun removeApiKey(provider: AIProvider) {
+        val attributes = createCredentialAttributes(provider)
+        PasswordSafe.instance.set(attributes, null)
+    }
+}
+
+/**
  * 插件设置状态类 - 为每个Provider独立存储配置
+ * API Key 使用 PasswordSafe 安全存储，不在此 State 中保存
  */
 @State(
     name = "org.febyher.settings.CopilotSettings",
-    storages = [Storage("FebyherCopilotSettings.xml")]
+    storages = [Storage("FebyherSettings.xml")]
 )
 @Service(Service.Level.APP)
 class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
 
+    /**
+     * State 只存储非敏感配置
+     * API Key 不再存储在 XML 中，改用 PasswordSafe
+     */
     data class State(
         var currentProvider: String = AIProvider.MOONSHOT.name,
-        var moonshotApiKey: String = "",
         var moonshotApiUrl: String = "",
         var moonshotModel: String = "",
-        var deepseekApiKey: String = "",
         var deepseekApiUrl: String = "",
         var deepseekModel: String = "",
-        var maxTokens: Int = 4096
+        var nvidiaApiUrl: String = "",
+        var nvidiaModel: String = "",
+        var maxTokens: Int = 4096,
+        // 用于迁移标记
+        var migratedToSecureStorage: Boolean = false,
+        // 旧字段用于迁移（迁移后会被清空）
+        @Deprecated("Use SecureKeyStorage") var moonshotApiKey: String = "",
+        @Deprecated("Use SecureKeyStorage") var deepseekApiKey: String = ""
     )
 
     private var myState = State()
@@ -136,8 +213,36 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
     }
 
     override fun getState(): State = myState
+    
     override fun loadState(state: State) {
         XmlSerializerUtil.copyBean(state, myState)
+        // 执行一次性迁移
+        migrateOldApiKeysIfNeeded()
+    }
+    
+    /**
+     * 将旧的明文 API Key 迁移到 PasswordSafe
+     */
+    private fun migrateOldApiKeysIfNeeded() {
+        if (myState.migratedToSecureStorage) return
+        
+        // 迁移 Moonshot API Key
+        @Suppress("DEPRECATION")
+        if (myState.moonshotApiKey.isNotBlank()) {
+            SecureKeyStorage.storeApiKey(AIProvider.MOONSHOT, myState.moonshotApiKey)
+            @Suppress("DEPRECATION")
+            myState.moonshotApiKey = ""
+        }
+        
+        // 迁移 DeepSeek API Key
+        @Suppress("DEPRECATION")
+        if (myState.deepseekApiKey.isNotBlank()) {
+            SecureKeyStorage.storeApiKey(AIProvider.DEEPSEEK, myState.deepseekApiKey)
+            @Suppress("DEPRECATION")
+            myState.deepseekApiKey = ""
+        }
+        
+        myState.migratedToSecureStorage = true
     }
 
     // 当前使用的Provider
@@ -149,10 +254,16 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
         get() = myState.maxTokens
         set(value) { myState.maxTokens = value }
 
-    // Moonshot配置
+    // Moonshot配置 - API Key 使用安全存储
     var moonshotApiKey: String
-        get() = myState.moonshotApiKey
-        set(value) { myState.moonshotApiKey = value }
+        get() = SecureKeyStorage.getApiKey(AIProvider.MOONSHOT) ?: ""
+        set(value) { 
+            if (value.isNotBlank()) {
+                SecureKeyStorage.storeApiKey(AIProvider.MOONSHOT, value)
+            } else {
+                SecureKeyStorage.removeApiKey(AIProvider.MOONSHOT)
+            }
+        }
     
     var moonshotApiUrl: String
         get() = myState.moonshotApiUrl
@@ -162,10 +273,16 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
         get() = myState.moonshotModel
         set(value) { myState.moonshotModel = value }
 
-    // DeepSeek配置
+    // DeepSeek配置 - API Key 使用安全存储
     var deepseekApiKey: String
-        get() = myState.deepseekApiKey
-        set(value) { myState.deepseekApiKey = value }
+        get() = SecureKeyStorage.getApiKey(AIProvider.DEEPSEEK) ?: ""
+        set(value) { 
+            if (value.isNotBlank()) {
+                SecureKeyStorage.storeApiKey(AIProvider.DEEPSEEK, value)
+            } else {
+                SecureKeyStorage.removeApiKey(AIProvider.DEEPSEEK)
+            }
+        }
     
     var deepseekApiUrl: String
         get() = myState.deepseekApiUrl
@@ -174,6 +291,25 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
     var deepseekModel: String
         get() = myState.deepseekModel
         set(value) { myState.deepseekModel = value }
+
+    // NVIDIA配置 - API Key 使用安全存储
+    var nvidiaApiKey: String
+        get() = SecureKeyStorage.getApiKey(AIProvider.NVIDIA) ?: ""
+        set(value) { 
+            if (value.isNotBlank()) {
+                SecureKeyStorage.storeApiKey(AIProvider.NVIDIA, value)
+            } else {
+                SecureKeyStorage.removeApiKey(AIProvider.NVIDIA)
+            }
+        }
+    
+    var nvidiaApiUrl: String
+        get() = myState.nvidiaApiUrl
+        set(value) { myState.nvidiaApiUrl = value }
+    
+    var nvidiaModel: String
+        get() = myState.nvidiaModel
+        set(value) { myState.nvidiaModel = value }
 
     /**
      * 获取指定Provider的配置
@@ -189,6 +325,11 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
                 apiKey = deepseekApiKey,
                 apiUrl = deepseekApiUrl,
                 model = deepseekModel
+            )
+            AIProvider.NVIDIA -> ProviderConfig(
+                apiKey = nvidiaApiKey,
+                apiUrl = nvidiaApiUrl,
+                model = nvidiaModel
             )
         }
     }
@@ -207,6 +348,11 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
                 deepseekApiKey = config.apiKey
                 deepseekApiUrl = config.apiUrl
                 deepseekModel = config.model
+            }
+            AIProvider.NVIDIA -> {
+                nvidiaApiKey = config.apiKey
+                nvidiaApiUrl = config.apiUrl
+                nvidiaModel = config.model
             }
         }
     }

@@ -9,6 +9,9 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- 通知组 -->
+        <notificationGroup id="Febyher AI Notifications" displayType="BALLOON" key="notification.group.name"/>
+
         <!-- AI 聊天工具窗口 -->
         <toolWindow
             factoryClass="org.febyher.chat.ChatToolWindowFactory"
@@ -25,6 +28,12 @@
 
         <!-- 应用设置 -->
         <applicationService serviceImplementation="org.febyher.settings.CopilotSettings"/>
+        
+        <!-- 审计日志服务 -->
+        <applicationService serviceImplementation="org.febyher.safety.AuditLogService"/>
+        
+        <!-- 权限管理器 -->
+        <applicationService serviceImplementation="org.febyher.safety.PermissionManager"/>
 
         <!-- 设置面板 -->
         <applicationConfigurable
@@ -33,4 +42,57 @@
             id="org.febyher.settings.CopilotSettingsConfigurable"
             displayName="Febyher AI"/>
     </extensions>
+
+    <!-- 右键菜单操作 -->
+    <actions>
+        <!-- 编辑器右键菜单组 -->
+        <group id="FebyherAI.EditorMenu" text="Febyher AI" popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            
+            <action id="FebyherAI.ExplainCode"
+                    class="org.febyher.actions.ExplainCodeAction"
+                    text="解释代码"
+                    description="使用 AI 解释选中的代码">
+            </action>
+            
+            <action id="FebyherAI.RefactorCode"
+                    class="org.febyher.actions.RefactorCodeAction"
+                    text="重构代码"
+                    description="请求 AI 重构选中的代码">
+            </action>
+            
+            <action id="FebyherAI.SendToAgent"
+                    class="org.febyher.actions.SendToAgentAction"
+                    text="发送到 Agent"
+                    description="将代码发送给 AI Agent 作为上下文">
+            </action>
+            
+            <separator/>
+            
+            <action id="FebyherAI.SelectFiles"
+                    class="org.febyher.actions.SelectFilesAction"
+                    text="选择文件..."
+                    description="选择多个文件作为上下文">
+            </action>
+        </group>
+        
+        <!-- 项目视图右键菜单 -->
+        <group id="FebyherAI.ProjectMenu" text="Febyher AI" popup="true">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            
+            <action id="FebyherAI.SelectFilesProject"
+                    class="org.febyher.actions.SelectFilesAction"
+                    text="添加到 AI 上下文"
+                    description="将选中的文件添加到 AI 上下文">
+            </action>
+        </group>
+        
+        <!-- 工具菜单 -->
+        <action id="FebyherAI.OpenFileSelector"
+                class="org.febyher.actions.SelectFilesAction"
+                text="Febyher AI: 选择文件"
+                description="选择文件发送给 AI">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

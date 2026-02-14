@@ -12,6 +12,8 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import org.febyher.context.CodeContext
 import org.febyher.llm.LLMServiceManager
+import org.febyher.llm.StreamCallback
+import org.febyher.notification.NotificationService
 import org.febyher.settings.AIProvider
 import org.febyher.settings.CopilotSettings
 import org.febyher.settings.ProviderDefaultsRegistry
@@ -41,6 +43,11 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     private lateinit var sendButton: JButton
     private lateinit var loadingLabel: JLabel
     private lateinit var modelComboBox: JComboBox<ModelItem>
+    
+    // 流式响应状态
+    @Volatile private var isStreaming = false
+    private var streamingContentPane: JTextPane? = null
+    private var streamingContent = StringBuilder()
 
     init {
         initUI()
@@ -150,7 +157,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 background = JBColor.namedColor("Panel.background", Color.WHITE)
                 isOpaque = false
 
-                loadingLabel = JLabel("思考中...").apply {
+                loadingLabel = JLabel("生成中...").apply {
                     isVisible = false
                     foreground = JBColor.GRAY
                     font = getChineseFont(Font.PLAIN, 12)
@@ -221,7 +228,11 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         
         // 检查Provider是否已配置
         if (!settings.isProviderConfigured(provider)) {
-            addMessage(MessageRole.SYSTEM, "请先在 Settings > Tools > Febyher AI 中配置 ${provider.displayName} 的 API Key")
+            NotificationService.apiKeyNotConfiguredWithAction(project, provider.displayName) {
+                // 打开设置面板
+                com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+                    .showSettingsDialog(project, "Febyher AI")
+            }
             // 恢复之前的选择
             updateModelComboBox()
             return
@@ -265,7 +276,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
 
     private fun sendMessage() {
         val message = inputTextArea.text.trim()
-        if (message.isEmpty()) return
+        if (message.isEmpty() || isStreaming) return
 
         // 添加用户消息到界面
         addMessage(MessageRole.USER, message)
@@ -274,18 +285,35 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         // 清空输入框
         inputTextArea.text = ""
 
-        // 获取代码上下文并发送给AI
-        sendToAI(message)
+        // 获取代码上下文并发送给AI（流式）
+        sendToAIStream(message)
     }
 
-    private fun sendToAI(userMessage: String) {
+    /**
+     * 流式发送请求到AI
+     */
+    private fun sendToAIStream(userMessage: String) {
         setLoading(true)
+        isStreaming = true
+        streamingContent.clear()
+        
+        // 预先创建一个空的AI消息气泡用于流式更新
+        val (messageComponent, contentPane) = createStreamingMessageComponent()
+        streamingContentPane = contentPane
+        
+        SwingUtilities.invokeLater {
+            messagesPanel.add(messageComponent)
+            messagesPanel.add(Box.createVerticalStrut(8))
+            messagesPanel.revalidate()
+            scrollToBottom()
+        }
 
-        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "AI 思考中...", true) {
-            private var response: String = ""
-
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "AI 生成中...", true) {
+            
             override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
+                indicator.isIndeterminate = false
+                indicator.text = "正在连接 AI 服务..."
+                indicator.fraction = 0.1
 
                 try {
                     // 获取当前代码上下文
@@ -295,27 +323,87 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                         null
                     }
 
-                    // 调用LLM服务
+                    indicator.text = "正在生成回复..."
+                    indicator.fraction = 0.2
+
+                    // 创建流式回调
+                    val callback = object : StreamCallback {
+                        override fun onDelta(delta: String) {
+                            if (indicator.isCanceled) return
+                            
+                            streamingContent.append(delta)
+                            
+                            // 在EDT中更新UI
+                            SwingUtilities.invokeLater {
+                                streamingContentPane?.let { pane ->
+                                    pane.text = convertMarkdownToHtml(streamingContent.toString())
+                                    scrollToBottom()
+                                }
+                            }
+                        }
+                        
+                        override fun onComplete(fullResponse: String) {
+                            // 流式完成
+                            SwingUtilities.invokeLater {
+                                chatSession.addMessage(MessageRole.ASSISTANT, fullResponse)
+                            }
+                        }
+                        
+                        override fun onError(error: String) {
+                            SwingUtilities.invokeLater {
+                                // 更新为错误消息
+                                streamingContentPane?.text = convertMarkdownToHtml(error)
+                            }
+                        }
+                    }
+
+                    // 调用流式LLM服务
                     val llmService = LLMServiceManager.getInstance(project).getService()
-                    response = llmService.chatWithContext(userMessage, context)
+                    llmService.chatStreamWithContext(userMessage, context, callback)
 
                 } catch (e: Exception) {
-                    response = "请求失败: ${e.message ?: "未知错误"}"
+                    SwingUtilities.invokeLater {
+                        streamingContentPane?.text = convertMarkdownToHtml("请求失败: ${e.message ?: "未知错误"}")
+                    }
                 }
             }
 
             override fun onSuccess() {
-                // 添加AI回复到界面
-                addMessage(MessageRole.ASSISTANT, response)
-                chatSession.addMessage(MessageRole.ASSISTANT, response)
-                setLoading(false)
+                finishStreaming()
             }
 
             override fun onCancel() {
-                addMessage(MessageRole.SYSTEM, "请求已取消")
-                setLoading(false)
+                finishStreaming()
+                NotificationService.operationCancelled(project)
+                SwingUtilities.invokeLater {
+                    if (streamingContent.isEmpty()) {
+                        // 移除空的消息气泡
+                        messagesPanel.remove(messagesPanel.componentCount - 1) // 移除间距
+                        messagesPanel.remove(messagesPanel.componentCount - 1) // 移除消息
+                        messagesPanel.revalidate()
+                        messagesPanel.repaint()
+                    }
+                }
+            }
+            
+            override fun onThrowable(error: Throwable) {
+                finishStreaming()
+                NotificationService.llmRequestFailed(project, error.message ?: "未知错误")
+                SwingUtilities.invokeLater {
+                    streamingContentPane?.text = convertMarkdownToHtml("请求失败: ${error.message ?: "未知错误"}")
+                }
             }
         })
+    }
+    
+    private fun finishStreaming() {
+        SwingUtilities.invokeLater {
+            isStreaming = false
+            setLoading(false)
+            streamingContentPane = null
+            messagesPanel.revalidate()
+            messagesPanel.repaint()
+        }
     }
 
     private fun addMessage(role: MessageRole, content: String) {
@@ -326,49 +414,37 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
 
             messagesPanel.revalidate()
             messagesPanel.repaint()
-
-            // 滚动到底部
-            SwingUtilities.invokeLater {
-                scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
-            }
+            scrollToBottom()
+        }
+    }
+    
+    private fun scrollToBottom() {
+        SwingUtilities.invokeLater {
+            scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
         }
     }
 
+    /**
+     * 创建静态消息组件
+     */
     private fun createMessageComponent(role: MessageRole, content: String): JComponent {
-        // 定义颜色方案
-        val bgColor = when (role) {
-            MessageRole.USER -> JBColor(0xE3F2FD, 0x1E3A5F)      // 蓝色系
-            MessageRole.ASSISTANT -> JBColor.namedColor("Panel.background", Color.WHITE)  // 透明背景
-            MessageRole.SYSTEM -> JBColor(0xFFF8E1, 0x4A3728)     // 黄色系
-        }
-        
-        val accentColor = when (role) {
-            MessageRole.USER -> JBColor(0x1976D2, 0x64B5F6)
-            MessageRole.ASSISTANT -> JBColor(0x388E3C, 0x81C784)
-            MessageRole.SYSTEM -> JBColor(0xF57C00, 0xFFB74D)
-        }
-        
-        val borderColor = when (role) {
-            MessageRole.USER -> JBColor(0x90CAF9, 0x1565C0)
-            MessageRole.ASSISTANT -> JBColor(0xE0E0E0, 0x555555)
-            MessageRole.SYSTEM -> JBColor(0xFFE082, 0x6D4C41)
-        }
+        val bgColor = getMessageBgColor(role)
+        val accentColor = getMessageAccentColor(role)
+        val borderColor = getMessageBorderColor(role)
 
         return JPanel(BorderLayout()).apply {
             background = JBColor.namedColor("Panel.background", Color.WHITE)
             isOpaque = true
             
-            // 消息气泡 - 占满整个宽度
             val bubblePanel = JPanel(BorderLayout(0, 8)).apply {
                 background = bgColor
-                isOpaque = role != MessageRole.ASSISTANT  // AI回复透明
+                isOpaque = role != MessageRole.ASSISTANT
                 border = BorderFactory.createCompoundBorder(
                     BorderFactory.createLineBorder(borderColor, 1),
                     JBUI.Borders.empty(12)
                 )
             }
 
-            // 角色标签行
             val roleLabel = JLabel(getRoleDisplayName(role)).apply {
                 font = getChineseFont(Font.BOLD, 12)
                 foreground = accentColor
@@ -380,7 +456,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 add(roleLabel, BorderLayout.WEST)
             }
 
-            // 内容区域 - 使用JTextPane支持HTML格式化
             val contentPane = JTextPane().apply {
                 contentType = "text/html"
                 text = convertMarkdownToHtml(content)
@@ -393,10 +468,79 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
 
             bubblePanel.add(headerPanel, BorderLayout.NORTH)
             bubblePanel.add(contentPane, BorderLayout.CENTER)
-
-            // 气泡占满整个宽度
             add(bubblePanel, BorderLayout.CENTER)
         }
+    }
+    
+    /**
+     * 创建流式消息组件（返回组件和内容面板引用）
+     */
+    private fun createStreamingMessageComponent(): Pair<JComponent, JTextPane> {
+        val role = MessageRole.ASSISTANT
+        val bgColor = getMessageBgColor(role)
+        val accentColor = getMessageAccentColor(role)
+        val borderColor = getMessageBorderColor(role)
+        
+        lateinit var contentPane: JTextPane
+
+        val messageComponent = JPanel(BorderLayout()).apply {
+            background = JBColor.namedColor("Panel.background", Color.WHITE)
+            isOpaque = true
+            
+            val bubblePanel = JPanel(BorderLayout(0, 8)).apply {
+                background = bgColor
+                isOpaque = false  // AI回复透明
+                border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(borderColor, 1),
+                    JBUI.Borders.empty(12)
+                )
+            }
+
+            val roleLabel = JLabel(getRoleDisplayName(role)).apply {
+                font = getChineseFont(Font.BOLD, 12)
+                foreground = accentColor
+            }
+
+            val headerPanel = JPanel(BorderLayout()).apply {
+                background = bgColor
+                isOpaque = false
+                add(roleLabel, BorderLayout.WEST)
+            }
+
+            contentPane = JTextPane().apply {
+                contentType = "text/html"
+                text = convertMarkdownToHtml("")
+                isEditable = false
+                background = bgColor
+                isOpaque = false
+                border = null
+                font = getChineseFont(Font.PLAIN, 13)
+            }
+
+            bubblePanel.add(headerPanel, BorderLayout.NORTH)
+            bubblePanel.add(contentPane, BorderLayout.CENTER)
+            add(bubblePanel, BorderLayout.CENTER)
+        }
+
+        return Pair(messageComponent, contentPane)
+    }
+    
+    private fun getMessageBgColor(role: MessageRole): JBColor = when (role) {
+        MessageRole.USER -> JBColor(0xE3F2FD, 0x1E3A5F)
+        MessageRole.ASSISTANT -> JBColor.namedColor("Panel.background", Color.WHITE)
+        MessageRole.SYSTEM -> JBColor(0xFFF8E1, 0x4A3728)
+    }
+    
+    private fun getMessageAccentColor(role: MessageRole): JBColor = when (role) {
+        MessageRole.USER -> JBColor(0x1976D2, 0x64B5F6)
+        MessageRole.ASSISTANT -> JBColor(0x388E3C, 0x81C784)
+        MessageRole.SYSTEM -> JBColor(0xF57C00, 0xFFB74D)
+    }
+    
+    private fun getMessageBorderColor(role: MessageRole): JBColor = when (role) {
+        MessageRole.USER -> JBColor(0x90CAF9, 0x1565C0)
+        MessageRole.ASSISTANT -> JBColor(0xE0E0E0, 0x555555)
+        MessageRole.SYSTEM -> JBColor(0xFFE082, 0x6D4C41)
     }
 
     private fun getRoleDisplayName(role: MessageRole): String {
@@ -408,21 +552,15 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     }
 
     private fun convertMarkdownToHtml(markdown: String): String {
-        // 简单的Markdown转HTML
-        // 注意：处理顺序很重要，先处理代码块，再处理其他
-
         val sb = StringBuilder()
         var lastIndex = 0
 
-        // 代码块模式
         val codeBlockPattern = "```(\\w+)?\\n(.*?)\\n```".toRegex(RegexOption.DOT_MATCHES_ALL)
 
         for (match in codeBlockPattern.findAll(markdown)) {
-            // 处理代码块之前的内容
             val beforeCode = markdown.substring(lastIndex, match.range.first)
             sb.append(processInlineMarkdown(beforeCode))
 
-            // 处理代码块
             val code = match.groupValues[2]
             val escapedCode = escapeHtmlForCode(code)
             sb.append("<pre style='background-color:#2D2D2D;color:#E0E0E0;padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-family:Consolas,Monaco,monospace;font-size:12px;'><code>")
@@ -432,14 +570,12 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             lastIndex = match.range.last + 1
         }
 
-        // 处理剩余内容
         if (lastIndex < markdown.length) {
             sb.append(processInlineMarkdown(markdown.substring(lastIndex)))
         }
 
         var html = sb.toString()
 
-        // 如果没有代码块，处理整个内容
         if (html.isEmpty()) {
             html = processInlineMarkdown(markdown)
         }
@@ -447,33 +583,18 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         return "<html><body style='font-family:Microsoft YaHei,SimHei,Noto Sans CJK SC,sans-serif;line-height:1.6;font-size:13px;margin:0;padding:0;'>$html</body></html>"
     }
 
-    /**
-     * 处理行内Markdown（代码块之外的）
-     */
     private fun processInlineMarkdown(text: String): String {
         var html = text
 
-        // 首先转义HTML特殊字符
         html = escapeHtmlBasic(html)
-
-        // 行内代码（先处理，避免与其他格式冲突）
         html = processInlineCode(html)
-
-        // 粗体
         html = html.replace("\\*\\*(.+?)\\*\\*".toRegex(), "<b>$1</b>")
-
-        // 斜体（单个星号，但要避免匹配到已经处理的bold）
         html = html.replace("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)".toRegex(), "<i>$1</i>")
-
-        // 换行
         html = html.replace("\n", "<br>")
 
         return html
     }
 
-    /**
-     * 基本的HTML转义
-     */
     private fun escapeHtmlBasic(text: String): String {
         return text
             .replace("&", "&amp;")
@@ -481,9 +602,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             .replace(">", "&gt;")
     }
 
-    /**
-     * 处理行内代码
-     */
     private fun processInlineCode(text: String): String {
         val sb = StringBuilder()
         var inCode = false
@@ -493,12 +611,10 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         while (i < text.length) {
             if (text[i] == '`') {
                 if (!inCode) {
-                    // 开始代码
                     sb.append(text.substring(codeStart, i))
                     inCode = true
                     codeStart = i + 1
                 } else {
-                    // 结束代码
                     val code = text.substring(codeStart, i)
                     sb.append("<code style='background-color:#2D2D2D;color:#E0E0E0;padding:3px 6px;border-radius:4px;font-family:Consolas,Monaco,monospace;font-size:12px;'>")
                     sb.append(escapeHtmlBasic(code))
@@ -510,7 +626,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             i++
         }
 
-        // 添加剩余内容
         if (codeStart < text.length) {
             sb.append(text.substring(codeStart))
         }
@@ -518,9 +633,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         return sb.toString()
     }
 
-    /**
-     * 为代码块转义HTML
-     */
     private fun escapeHtmlForCode(text: String): String {
         return text
             .replace("&", "&amp;")
@@ -537,6 +649,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     }
 
     private fun clearChat() {
+        if (isStreaming) return  // 流式响应时不允许清空
+        
         messagesPanel.removeAll()
         chatSession.clear()
         addWelcomeMessage()
@@ -544,36 +658,65 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         messagesPanel.repaint()
     }
 
+    /**
+     * 接收来自外部（如右键菜单）的消息
+     * 将消息填入输入框并自动发送
+     */
+    fun receiveExternalMessage(message: String) {
+        if (isStreaming) {
+            NotificationService.warning(project, "请稍候", "当前正在处理请求，请等待完成后再发送")
+            return
+        }
+        
+        SwingUtilities.invokeLater {
+            inputTextArea.text = message
+            sendMessage()
+        }
+    }
+    
+    /**
+     * 将上下文追加到输入框（不自动发送）
+     * 允许用户继续输入内容后一并发送
+     */
+    fun appendContextToInput(contextInfo: String, fileCount: Int, totalTokens: Int) {
+        SwingUtilities.invokeLater {
+            val currentText = inputTextArea.text.trim()
+            val separator = if (currentText.isNotEmpty()) "\n\n" else ""
+            
+            // 追加上下文到现有内容后面
+            inputTextArea.text = "$currentText$separator$contextInfo\n\n请告诉我你想对这些代码做什么？"
+            
+            // 滚动到输入框底部并获取焦点
+            inputTextArea.caretPosition = inputTextArea.text.length
+            inputTextArea.requestFocusInWindow()
+        }
+    }
+
     override fun dispose() {
         // 清理资源
     }
 
     companion object {
-        /**
-         * 获取支持中文的字体
-         */
         fun getChineseFont(style: Int = Font.PLAIN, size: Int): Font {
-            // 尝试使用支持中文的字体
             val fontNames = arrayOf(
-                "Microsoft YaHei",      // 微软雅黑 (Windows)
-                "SimHei",               // 黑体 (Windows)
-                "SimSun",               // 宋体 (Windows)
-                "Noto Sans CJK SC",     // Noto Sans (Linux)
-                "Source Han Sans SC",   // 思源黑体
-                "WenQuanYi Micro Hei",  // 文泉驿 (Linux)
-                "PingFang SC",          // 苹方 (macOS)
-                "Heiti SC",             // 黑体 (macOS)
-                "STHeiti"               // 华文黑体 (macOS)
+                "Microsoft YaHei",
+                "SimHei",
+                "SimSun",
+                "Noto Sans CJK SC",
+                "Source Han Sans SC",
+                "WenQuanYi Micro Hei",
+                "PingFang SC",
+                "Heiti SC",
+                "STHeiti"
             )
 
             for (fontName in fontNames) {
                 val font = Font(fontName, style, size)
-                if (font.family != "Dialog") {  // 如果字体有效
+                if (font.family != "Dialog") {
                     return font
                 }
             }
 
-            // 如果都找不到，使用系统默认字体
             return Font(Font.DIALOG, style, size)
         }
     }
