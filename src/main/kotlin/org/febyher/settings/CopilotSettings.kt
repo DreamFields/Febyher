@@ -14,12 +14,12 @@ import com.intellij.util.xmlb.XmlSerializerUtil
  * AI服务提供商枚举
  */
 enum class AIProvider(val displayName: String) {
-    MOONSHOT("Moonshot (Kimi)"),
+    MOONSHOT("Kimi"),
     DEEPSEEK("DeepSeek"),
     NVIDIA("NVIDIA NIM");
-    
+
     companion object {
-        fun fromName(name: String): AIProvider = 
+        fun fromName(name: String): AIProvider =
             values().find { it.name.equals(name, ignoreCase = true) } ?: MOONSHOT
     }
 }
@@ -39,14 +39,10 @@ interface ProviderDefaults {
  */
 object MoonshotDefaults : ProviderDefaults {
     override val defaultUrl = "https://api.moonshot.cn/v1/chat/completions"
-    override val defaultModel = "kimi-k2-turbo-preview"
-    override val defaultTemperature = 0.6
+    override val defaultModel = "kimi-k2.5"
+    override val defaultTemperature = 1.0
     override val availableModels = listOf(
-        "kimi-k2-turbo-preview",
-        "kimi-k2-pro",
-        "moonshot-v1-8k",
-        "moonshot-v1-32k",
-        "moonshot-v1-128k"
+        "kimi-k2.5"
     )
 }
 
