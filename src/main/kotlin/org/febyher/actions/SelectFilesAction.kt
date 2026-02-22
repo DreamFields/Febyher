@@ -8,87 +8,65 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import org.febyher.chat.ChatPanel
 import org.febyher.context.ContextBuilder
+import org.febyher.context.ProjectContext
 import org.febyher.notification.NotificationService
+import org.febyher.settings.CopilotSettings
 
-/**
- * "添加到AI上下文" 右键菜单操作
- * 将选中的文件或文件夹直接添加到聊天输入框，与现有内容合并后一并发送
- */
 class SelectFilesAction : AnAction() {
-    
-    // 允许的代码文件扩展名
+
     private val allowedExtensions = setOf(
-        "kt", "kts", "java", "py", "js", "ts", "tsx", 
+        "kt", "kts", "java", "py", "js", "ts", "tsx",
         "rs", "go", "cpp", "c", "h", "hpp", "json", "xml", "yaml", "yml",
         "md", "html", "css", "scss", "sql", "sh", "gradle", "properties"
     )
-    
-    // 排除的目录
+
     private val excludePatterns = setOf(
         "node_modules", ".git", ".idea", "build", "target", "dist", "out", ".gradle"
     )
-    
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        
-        // 获取用户在项目视图中选中的文件/文件夹
-        val selectedFiles = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)
-        
-        if (selectedFiles.isNullOrEmpty()) {
-            NotificationService.info(project, "未选择文件", "请选择文件或文件夹")
+        val selectedRoots = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)
+
+        if (selectedRoots.isNullOrEmpty()) {
+            NotificationService.info(project, "No Selection", "Select files or folders first.")
             return
         }
-        
-        // 收集所有代码文件（包括文件夹内的文件）
-        val codeFiles = collectCodeFiles(selectedFiles.toList())
-        
+
+        val codeFiles = collectCodeFiles(selectedRoots.toList())
         if (codeFiles.isEmpty()) {
-            NotificationService.info(project, "无可添加文件", "选中的文件/文件夹中没有可添加的代码文件")
+            NotificationService.info(project, "No Supported Files", "No code files were found in selection.")
             return
         }
-        
-        // 构建上下文
-        val contextBuilder = ContextBuilder.create(project)
-        contextBuilder.addFiles(codeFiles)
-        val (context, isWithinLimit) = contextBuilder.buildWithLimit()
-        
+
+        val maxTokens = CopilotSettings.getInstance().maxTokens.coerceAtLeast(1024)
+        val builder = ContextBuilder.create(project).withMaxTokens(maxTokens).addFiles(codeFiles)
+        val (context, isWithinLimit) = builder.buildWithLimit()
         if (!isWithinLimit) {
-            NotificationService.contextTooLarge(project, context.totalTokens, 32000)
+            NotificationService.contextTooLarge(project, context.totalTokens, maxTokens)
             return
         }
-        
-        // 发送到聊天窗口（追加到输入框，不自动发送）
-        appendContextToChatInput(project, context)
+
+        appendSelectionToChatInput(project, selectedRoots.toList(), context, codeFiles.size)
     }
-    
-    /**
-     * 递归收集代码文件
-     */
+
     private fun collectCodeFiles(files: List<VirtualFile>): List<VirtualFile> {
         val result = mutableListOf<VirtualFile>()
-        
+
         for (file in files) {
             if (file.isDirectory) {
-                // 递归处理目录
                 collectFilesFromDirectory(file, result)
-            } else {
-                // 直接处理文件
-                if (isCodeFile(file)) {
-                    result.add(file)
-                }
+            } else if (isCodeFile(file)) {
+                result.add(file)
             }
         }
-        
+
         return result
     }
-    
-    /**
-     * 从目录中递归收集代码文件
-     */
+
     private fun collectFilesFromDirectory(dir: VirtualFile, result: MutableList<VirtualFile>) {
-        // 跳过排除的目录
         if (dir.name in excludePatterns) return
-        
+
         for (child in dir.children) {
             if (child.isDirectory) {
                 collectFilesFromDirectory(child, result)
@@ -97,47 +75,62 @@ class SelectFilesAction : AnAction() {
             }
         }
     }
-    
-    /**
-     * 判断是否为代码文件
-     */
+
     private fun isCodeFile(file: VirtualFile): Boolean {
         val ext = file.extension?.lowercase() ?: return false
         return ext in allowedExtensions
     }
-    
-    /**
-     * 将上下文追加到聊天输入框（不自动发送）
-     */
-    private fun appendContextToChatInput(project: Project, context: org.febyher.context.ProjectContext) {
-        val toolWindow = ToolWindowManager.getInstance(project)
-            .getToolWindow("Febyher AI")
-        
+
+    private fun appendSelectionToChatInput(
+        project: Project,
+        selectedRoots: List<VirtualFile>,
+        context: ProjectContext,
+        matchedCodeFiles: Int
+    ) {
+        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Febyher AI")
         if (toolWindow == null) {
-            NotificationService.warning(project, "窗口未找到", "请先打开 Febyher AI 工具窗口")
+            NotificationService.warning(project, "Tool Window Missing", "Open the Febyher AI tool window first.")
             return
         }
-        
+
         toolWindow.activate {
             val content = toolWindow.contentManager.getContent(0)
             val chatPanel = content?.component as? ChatPanel
-            
             if (chatPanel != null) {
-                val contextInfo = buildContextInfo(context)
-                chatPanel.appendContextToInput(contextInfo, context.fileCount, context.totalTokens)
-                NotificationService.contextCollected(project, context.fileCount, context.totalTokens)
+                val displayTags = buildSelectionTags(selectedRoots, matchedCodeFiles)
+                val payload = buildPayload(context)
+                chatPanel.appendContextToInput(displayTags, payload, context.fileCount, context.totalTokens)
+                NotificationService.info(
+                    project,
+                    "Selection Added",
+                    "Added ${selectedRoots.size} item(s), packed ${context.fileCount} file(s) context."
+                )
             }
         }
     }
-    
-    /**
-     * 构建上下文信息（包含完整代码内容）
-     */
-    private fun buildContextInfo(context: org.febyher.context.ProjectContext): String {
-        val sb = StringBuilder()
-        sb.appendLine("[已添加 ${context.fileCount} 个文件作为上下文，共 ${context.totalTokens} tokens]")
-        sb.appendLine()
-        sb.append(context.toFullContext())
-        return sb.toString()
+
+    private fun buildPayload(context: ProjectContext): String {
+        return buildString {
+            appendLine("### Attached Project Context")
+            appendLine(context.toContextSummary())
+            appendLine(context.toFullContext())
+        }.trim()
+    }
+
+    private fun buildSelectionTags(selectedRoots: List<VirtualFile>, matchedCodeFiles: Int): String {
+        val fileLabels = selectedRoots
+            .filter { !it.isDirectory }
+            .map { "`[FILE] ${it.name}`" }
+        val folderLabels = selectedRoots
+            .filter { it.isDirectory }
+            .map { "`[FOLDER] ${it.name}`" }
+
+        return buildString {
+            appendLine("### CONTEXT TARGETS")
+            if (folderLabels.isNotEmpty()) appendLine(folderLabels.joinToString("  "))
+            if (fileLabels.isNotEmpty()) appendLine(fileLabels.joinToString("  "))
+            appendLine()
+            appendLine("Matched code files: $matchedCodeFiles")
+        }.trim()
     }
 }

@@ -12,7 +12,11 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
+import org.febyher.agent.AgentOrchestrator
+import org.febyher.agent.AgentState
 import org.febyher.context.CodeContext
+import org.febyher.context.ContextBuilder
+import org.febyher.context.ProjectContext
 import org.febyher.llm.LLMServiceManager
 import org.febyher.llm.StreamCallback
 import org.febyher.llm.aurod.AurodLLMService
@@ -53,6 +57,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     private lateinit var sendButton: JButton
     private lateinit var loadingLabel: JLabel
     private lateinit var modelComboBox: JComboBox<ModelItem>
+    private var pendingSelectionContextPayload: String = ""
+    private var pendingSelectionContextDisplay: String = ""
 
     // Aurod 会话栏（子组件）
     private lateinit var aurodSessionBar: AurodSessionBar
@@ -322,6 +328,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         isStreaming = false
         streamingContent.clear()
         streamingContentPane = null
+        clearPendingSelectionContext()
         setLoading(false)
 
         messagesPanel.removeAll()
@@ -425,15 +432,37 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
     }
 
+    // Agent 选择相关
+    private lateinit var agentComboBox: JComboBox<String>
+    private var currentAgent: String = "Chat"  // 默认使用普通聊天模式
+
     private fun createBottomPanel(): JComponent {
         return JPanel(BorderLayout()).apply {
             background = JBColor.namedColor("Panel.background", Color.WHITE)
             border = JBUI.Borders.emptyTop(8)
 
-            // 左侧：模型选择
+            // 左侧：Agent选择 + 模型选择
             val modelPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0)).apply {
                 background = JBColor.namedColor("Panel.background", Color.WHITE)
                 isOpaque = false
+
+                // Agent 选择
+                val agentLabel = JLabel("模式:").apply {
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
+                }
+                add(agentLabel)
+
+                agentComboBox = JComboBox<String>().apply {
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
+                    preferredSize = Dimension(80, 26)
+                    addItem("Chat")
+                    addItem("Agent")
+                    selectedIndex = 0
+                    addActionListener { onAgentChanged() }
+                }
+                add(agentComboBox)
+
+                add(Box.createHorizontalStrut(8))
 
                 val modelLabel = JLabel("模型:").apply {
                     font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
@@ -519,6 +548,11 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
     }
 
+    private fun onAgentChanged() {
+        currentAgent = agentComboBox.selectedItem as? String ?: "Chat"
+        // Agent 模式暂时只做 UI 切换，实际逻辑在发送消息时判断
+    }
+
     private fun onModelChanged() {
         val selectedItem = modelComboBox.selectedItem as? ModelItem ?: return
         val settings = CopilotSettings.getInstance()
@@ -587,11 +621,17 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     }
 
     private fun sendMessage() {
-        val message = inputTextArea.text.trim()
-        if (message.isEmpty() || isStreaming) return
+        val inputText = inputTextArea.text.trim()
+        if (inputText.isEmpty() || isStreaming) return
+
+        val visibleUserMessage = extractUserInput(inputText)
+        val userMessageForDisplay = if (visibleUserMessage.isNotBlank()) visibleUserMessage else inputText
+        val userMessageForModel = buildMessageForModel(visibleUserMessage)
 
         val settings = CopilotSettings.getInstance()
-        logger.info("[ChatPanel] 发送消息开始, provider=${settings.currentProvider}, message length=${message.length}")
+        logger.info(
+            "[ChatPanel] 发送消息开始, provider=${settings.currentProvider}, display length=${userMessageForDisplay.length}, model length=${userMessageForModel.length}"
+        )
 
         // Aurod: 如果当前无会话，先自动创建再发送
         if (settings.currentProvider == AIProvider.AUROD) {
@@ -606,7 +646,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             if (manager.currentSession == null) {
                 // 自动创建会话再发送
                 logger.info("[ChatPanel] 当前无会话，触发自动创建")
-                autoCreateAurodSessionAndSend(manager, message)
+                autoCreateAurodSessionAndSend(manager, userMessageForDisplay, userMessageForModel)
                 return
             } else {
                 // 确保 LLMService 同步了 sessionId 和当前选择的模型
@@ -624,18 +664,22 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
 
         logger.info("[ChatPanel] 准备调用 doSendMessage")
-        doSendMessage(message)
+        doSendMessage(userMessageForDisplay, userMessageForModel)
     }
 
     /**
      * 自动创建 Aurod 会话后发送消息
      */
-    private fun autoCreateAurodSessionAndSend(manager: AurodSessionManager, message: String) {
+    private fun autoCreateAurodSessionAndSend(
+        manager: AurodSessionManager,
+        displayMessage: String,
+        modelMessage: String
+    ) {
         val model = CopilotSettings.getInstance().getEffectiveModel()
 
         // 先显示用户消息
-        addMessage(MessageRole.USER, message)
-        chatSession.addMessage(MessageRole.USER, message)
+        addMessage(MessageRole.USER, displayMessage)
+        chatSession.addMessage(MessageRole.USER, displayMessage)
         inputTextArea.text = ""
 
         setLoading(true)
@@ -649,7 +693,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                         updateAurodSessionBar()
                         setLoading(false)
                         // 现在发送消息
-                        sendToAIStream(message)
+                        clearPendingSelectionContext()
+                        sendToAIStream(modelMessage)
                     }
                 } catch (e: Exception) {
                     logger.error("[ChatPanel] 自动创建 Aurod 会话失败", e)
@@ -665,13 +710,100 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     /**
      * 实际执行发送消息（已确保会话就绪）
      */
-    private fun doSendMessage(message: String) {
-        logger.info("[ChatPanel] doSendMessage 开始执行, message length=${message.length}")
-        addMessage(MessageRole.USER, message)
-        chatSession.addMessage(MessageRole.USER, message)
+    private fun doSendMessage(displayMessage: String, modelMessage: String) {
+        logger.info(
+            "[ChatPanel] doSendMessage 开始执行, display length=${displayMessage.length}, model length=${modelMessage.length}"
+        )
+        addMessage(MessageRole.USER, displayMessage)
+        chatSession.addMessage(MessageRole.USER, displayMessage)
         inputTextArea.text = ""
-        logger.info("[ChatPanel] 用户消息已添加，准备调用 sendToAIStream")
-        sendToAIStream(message)
+        logger.info("[ChatPanel] 用户消息已添加")
+        clearPendingSelectionContext()
+
+        // 根据当前模式选择发送方式
+        if (currentAgent == "Agent") {
+            sendToAgent(modelMessage)
+        } else {
+            sendToAIStream(modelMessage)
+        }
+    }
+
+    /**
+     * Agent 模式发送请求
+     */
+    private fun sendToAgent(userMessage: String) {
+        logger.info("[ChatPanel] Agent模式发送消息, length=${userMessage.length}")
+        setLoading(true)
+        isStreaming = true
+        streamingContent.clear()
+        val streamId = beginNewStream()
+
+        // 预先创建AI消息气泡
+        val isAurodRenderer = isAurodProvider()
+        val (messageComponent, contentPane) = createStreamingMessageComponent(isAurodRenderer)
+        streamingContentPane = contentPane
+        val localContentPane = contentPane
+
+        messagesPanel.add(messageComponent)
+        messagesPanel.add(Box.createVerticalStrut(8))
+        messagesPanel.revalidate()
+        scrollToBottom()
+
+        // 构建项目上下文
+        val projectContext: ProjectContext? = try {
+            ContextBuilder.create(project)
+                .addEditorSelection()
+                .build()
+        } catch (e: Exception) {
+            null
+        }
+
+        // 调用 AgentOrchestrator
+        val orchestrator = AgentOrchestrator.getInstance(project)
+        orchestrator.execute(
+            userRequest = userMessage,
+            context = projectContext,
+            onStateChange = { state ->
+                SwingUtilities.invokeLater {
+                    when (state) {
+                        is AgentState.Planning -> {
+                            localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("**正在规划...**")
+                        }
+                        is AgentState.Coding -> {
+                            localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("**正在生成代码...**")
+                        }
+                        is AgentState.Error -> {
+                            localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("**错误:** ${state.message}")
+                        }
+                        else -> {}
+                    }
+                }
+            },
+            onDiffGenerated = { diffs ->
+                logger.info("[ChatPanel] Agent生成了 ${diffs.size} 个diff")
+            },
+            onComplete = { response ->
+                SwingUtilities.invokeLater {
+                    if (!isActiveStream(streamId)) return@invokeLater
+                    val html = ChatMessageRenderer.convertMarkdownToHtml(response.rawContent.ifBlank { response.summary })
+                    localContentPane.text = html
+                    localContentPane.revalidate()
+                    localContentPane.repaint()
+                    messagesPanel.revalidate()
+                    messagesPanel.repaint()
+                    scrollToBottom()
+                    chatSession.addMessage(MessageRole.ASSISTANT, response.rawContent.ifBlank { response.summary })
+                    finishStreaming(streamId)
+                }
+            },
+            onError = { error ->
+                SwingUtilities.invokeLater {
+                    if (!isActiveStream(streamId)) return@invokeLater
+                    localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("**错误:** $error")
+                    finishStreaming(streamId)
+                }
+            }
+        )
     }
 
     /**
@@ -1038,6 +1170,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         if (isStreaming) return  // 流式响应时不允许清空
 
         invalidateActiveStream()
+        clearPendingSelectionContext()
         messagesPanel.removeAll()
         chatSession.clear()
         addWelcomeMessage()
@@ -1051,6 +1184,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     fun clearChatForNewLocalSession() {
         if (isStreaming) return
         invalidateActiveStream()
+        clearPendingSelectionContext()
         messagesPanel.removeAll()
         chatSession.clear()
         addWelcomeMessage()
@@ -1069,6 +1203,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
 
         SwingUtilities.invokeLater {
+            clearPendingSelectionContext()
             inputTextArea.text = message
             sendMessage()
         }
@@ -1100,6 +1235,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         isStreaming = false
         streamingContent.clear()
         streamingContentPane = null
+        clearPendingSelectionContext()
         setLoading(false)
         messagesPanel.removeAll()
         chatSession.clear()
@@ -1118,21 +1254,63 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     }
 
     /**
-     * 将上下文追加到输入框（不自动发送）
-     * 允许用户继续输入内容后一并发送
+     * 兼容旧调用：显示文本与真实 payload 相同。
      */
     fun appendContextToInput(contextInfo: String, fileCount: Int, totalTokens: Int) {
+        appendContextToInput(contextInfo, contextInfo, fileCount, totalTokens)
+    }
+
+    /**
+     * 在输入框中仅展示醒目标识；真实上下文作为隐藏 payload 在发送时拼接。
+     */
+    fun appendContextToInput(displayInfo: String, contextPayload: String, fileCount: Int, totalTokens: Int) {
         SwingUtilities.invokeLater {
-            val currentText = inputTextArea.text.trim()
-            val separator = if (currentText.isNotEmpty()) "\n\n" else ""
+            pendingSelectionContextDisplay = mergeContextChunk(pendingSelectionContextDisplay, displayInfo)
+            pendingSelectionContextPayload = mergeContextChunk(pendingSelectionContextPayload, contextPayload)
 
-            // 追加上下文到现有内容后面
-            inputTextArea.text = "$currentText$separator$contextInfo\n\n请告诉我你想对这些代码做什么？"
-
-            // 滚动到输入框底部并获取焦点
+            val currentUserText = extractUserInput(inputTextArea.text)
+            val displayBlock = if (pendingSelectionContextDisplay.isBlank()) {
+                ""
+            } else {
+                "[CONTEXT_TAGS]\n$pendingSelectionContextDisplay\n[/CONTEXT_TAGS]\n\n"
+            }
+            val prompt = if (currentUserText.isBlank()) "请描述你的需求..." else currentUserText
+            inputTextArea.text = "$displayBlock$prompt"
             inputTextArea.caretPosition = inputTextArea.text.length
             inputTextArea.requestFocusInWindow()
         }
+    }
+
+    private fun buildMessageForModel(userInput: String): String {
+        val prompt = if (userInput.isBlank()) "请基于上述上下文进行分析。"
+        else userInput
+
+        if (pendingSelectionContextPayload.isBlank()) return prompt
+
+        return buildString {
+            appendLine(pendingSelectionContextPayload.trim())
+            appendLine()
+            appendLine("### User Request")
+            appendLine(prompt)
+        }.trim()
+    }
+
+    private fun extractUserInput(rawInput: String): String {
+        val withoutBlock = rawInput.replace(Regex("(?s)\\[CONTEXT_TAGS\\].*?\\[/CONTEXT_TAGS\\]\\s*"), "")
+        val text = withoutBlock.trim()
+        return if (text == "请描述你的需求...") "" else text
+    }
+
+    private fun mergeContextChunk(existing: String, incoming: String): String {
+        val incomingTrimmed = incoming.trim()
+        if (incomingTrimmed.isBlank()) return existing
+        if (existing.isBlank()) return incomingTrimmed
+        return "$existing\n\n$incomingTrimmed"
+    }
+
+    private fun clearPendingSelectionContext() {
+        pendingSelectionContextPayload = ""
+        pendingSelectionContextDisplay = ""
     }
 
     override fun dispose() {
