@@ -24,14 +24,14 @@ class ChatToolWindowFactory : ToolWindowFactory {
         chatContent.setDisposer(chatPanel)
         toolWindow.contentManager.addContent(chatContent)
 
-        // 标签页 2: Aurod 管理面板
-        val aurodPanel = AurodActionPanel(project)
-        val aurodContent = ContentFactory.getInstance().createContent(
-            aurodPanel,
-            "Aurod 管理",
+        // 标签页 2: 会话管理（Aurod + 本地会话统一入口）
+        val sessionPanel = SessionManagementPanel(project)
+        val sessionContent = ContentFactory.getInstance().createContent(
+            sessionPanel,
+            "会话管理",
             false
         )
-        toolWindow.contentManager.addContent(aurodContent)
+        toolWindow.contentManager.addContent(sessionContent)
     }
 
     override fun shouldBeAvailable(project: Project) = true

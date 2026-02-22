@@ -19,6 +19,7 @@ import org.febyher.llm.aurod.AurodLLMService
 import org.febyher.llm.aurod.AurodSession
 import org.febyher.llm.aurod.AurodSessionManager
 import org.febyher.notification.NotificationService
+import org.febyher.chat.session.LocalMessageDto
 import org.febyher.settings.AIProvider
 import org.febyher.settings.CopilotSettings
 import org.febyher.settings.ProviderDefaultsRegistry
@@ -1045,6 +1046,19 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     }
 
     /**
+     * 供会话管理面板「新建会话」调用：清空当前对话并显示欢迎语
+     */
+    fun clearChatForNewLocalSession() {
+        if (isStreaming) return
+        invalidateActiveStream()
+        messagesPanel.removeAll()
+        chatSession.clear()
+        addWelcomeMessage()
+        messagesPanel.revalidate()
+        messagesPanel.repaint()
+    }
+
+    /**
      * 接收来自外部（如右键菜单）的消息
      * 将消息填入输入框并自动发送
      */
@@ -1058,6 +1072,49 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             inputTextArea.text = message
             sendMessage()
         }
+    }
+
+    /**
+     * 获取当前会话消息（供本地会话保存）
+     */
+    fun getCurrentMessagesForSave(): List<LocalMessageDto> {
+        return chatSession.getMessages().map {
+            LocalMessageDto(
+                role = when (it.role) {
+                    MessageRole.USER -> "user"
+                    MessageRole.ASSISTANT -> "assistant"
+                    MessageRole.SYSTEM -> "system"
+                },
+                content = it.content
+            )
+        }
+    }
+
+    /**
+     * 加载本地会话历史到面板（供会话管理面板「加载」使用）
+     * 会清空当前展示并填入 messages，不添加欢迎语
+     */
+    fun loadLocalSession(messages: List<LocalMessageDto>) {
+        if (isStreaming) return
+        invalidateActiveStream()
+        isStreaming = false
+        streamingContent.clear()
+        streamingContentPane = null
+        setLoading(false)
+        messagesPanel.removeAll()
+        chatSession.clear()
+        for (msg in messages) {
+            val role = when (msg.role) {
+                "user" -> MessageRole.USER
+                "assistant" -> MessageRole.ASSISTANT
+                else -> MessageRole.SYSTEM
+            }
+            addMessage(role, msg.content)
+            chatSession.addMessage(role, msg.content)
+        }
+        messagesPanel.revalidate()
+        messagesPanel.repaint()
+        scrollToBottom()
     }
 
     /**

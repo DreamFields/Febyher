@@ -65,13 +65,14 @@ Febyher/
 - **动作**：
   - 编辑器右键：解释代码、重构代码、发送到 Agent、选择文件
   - 项目视图右键：添加到 AI 上下文
-  - Tools 菜单：选择文件、Aurod 管理
+  - Tools 菜单：选择文件、会话管理
 
 ### 3.2 UI 与交互层
 
 | 模块 | 主要类 | 职责 |
 |------|--------|------|
-| **chat** | `ChatFacade`, `ChatToolWindowFactory`, `ChatPanel`, `AurodSessionBar`, `ChatMessageRenderer`, `ChatUiUtils`, `AurodActionPanel`, `ChatMessage` | `ChatFacade` 门面；ChatPanel 主面板；`AurodSessionBar` 会话栏 UI；`ChatMessageRenderer` 消息 Markdown/HTML 与样式；`ChatUiUtils` 字体等 UI 工具；工具窗口、模型选择 |
+| **chat** | `ChatFacade`, `ChatToolWindowFactory`, `ChatPanel`, `SessionManagementPanel`, `AurodSessionBar`, `ChatMessageRenderer`, `ChatUiUtils`, `AurodActionPanel`, `ChatMessage` | `ChatFacade` 门面；ChatPanel 主面板；`SessionManagementPanel` 统一会话管理（Aurod 标签 + 本地会话标签）；`AurodSessionBar` 会话栏 UI；`ChatMessageRenderer` 消息渲染；`ChatUiUtils` 字体工具；`AurodActionPanel` Aurod 会话/模型/测试 |
+| **chat.session** | `LocalChatSession`, `LocalMessageDto`, `LocalSessionStorage`, `LocalSessionPanel` | 本地会话数据模型与按项目持久化（`.idea/febyher/chat_sessions.json`），仅用于非 Aurod 模型（Kimi/DeepSeek/NVIDIA）；新建/保存/加载/删除 |
 | **settings** | `CopilotSettingsConfigurable`, `CopilotSettings` | 设置持久化与设置 UI（API Key、Provider、模型、Aurod 等） |
 | **actions** | `ExplainCodeAction`, `RefactorCodeAction`, `SendToAgentAction`, `SelectFilesAction`, `AurodManageAction` | 通过 `ChatFacade` 或 Agent/Context 与聊天与 LLM 交互，不直接依赖 `ChatPanel` 实现类 |
 

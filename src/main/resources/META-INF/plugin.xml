@@ -98,11 +98,11 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
 
-        <!-- Aurod 管理入口 -->
+        <!-- 会话管理入口 -->
         <action id="FebyherAI.AurodManage"
                 class="org.febyher.actions.AurodManageAction"
-                text="Febyher AI: Aurod 管理"
-                description="打开 Aurod AI 会话管理面板">
+                text="Febyher AI: 会话管理"
+                description="打开会话管理面板（Aurod 会话 + 本地会话）">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>
