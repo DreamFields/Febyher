@@ -9,6 +9,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.util.xmlb.XmlSerializerUtil
+import org.febyher.llm.aurod.AurodConfig
 
 /**
  * AI服务提供商枚举
@@ -16,7 +17,8 @@ import com.intellij.util.xmlb.XmlSerializerUtil
 enum class AIProvider(val displayName: String) {
     MOONSHOT("Kimi"),
     DEEPSEEK("DeepSeek"),
-    NVIDIA("NVIDIA NIM");
+    NVIDIA("NVIDIA NIM"),
+    AUROD("Aurod AI");
 
     companion object {
         fun fromName(name: String): AIProvider =
@@ -80,6 +82,24 @@ object NvidiaDefaults : ProviderDefaults {
 }
 
 /**
+ * Aurod AI 默认配置
+ * 注意：Aurod 使用自有 API 体系（非 OpenAI 兼容），模型列表从服务器动态获取
+ */
+object AurodDefaults : ProviderDefaults {
+    override val defaultUrl = "https://ai.aurod.cn/api/chat/completions"
+    override val defaultModel = "gpt-5.3-codex"
+    override val defaultTemperature = 0.0
+    override val availableModels = listOf(
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-xhigh",
+        "claude-sonnet-4-5-20250929-thinking",
+        "claude-sonnet-4-6",
+        "gemini-3-flash-preview",
+        "gemini-3-flash-preview-thinking"
+    )
+}
+
+/**
  * Provider配置注册表 - 集中管理所有Provider的默认配置
  */
 object ProviderDefaultsRegistry {
@@ -87,7 +107,8 @@ object ProviderDefaultsRegistry {
     private val registry = mutableMapOf<AIProvider, ProviderDefaults>(
         AIProvider.MOONSHOT to MoonshotDefaults,
         AIProvider.DEEPSEEK to DeepSeekDefaults,
-        AIProvider.NVIDIA to NvidiaDefaults
+        AIProvider.NVIDIA to NvidiaDefaults,
+        AIProvider.AUROD to AurodDefaults
     )
     
     /**
@@ -190,6 +211,12 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
         var deepseekModel: String = "",
         var nvidiaApiUrl: String = "",
         var nvidiaModel: String = "",
+        // Aurod AI 配置（使用 token 认证，非 API Key）
+        var aurodAuthToken: String = "",
+        var aurodCookie: String = "",
+        var aurodUid: Long = 0,
+        var aurodAccount: String = "",
+        var aurodModel: String = "",
         var maxTokens: Int = 4096,
         // 用于迁移标记
         var migratedToSecureStorage: Boolean = false,
@@ -307,6 +334,40 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
         get() = myState.nvidiaModel
         set(value) { myState.nvidiaModel = value }
 
+    // Aurod AI 配置 - 使用 token 认证（非标准 Bearer API Key）
+    // Aurod 密码使用 PasswordSafe 安全存储
+    var aurodPassword: String
+        get() = SecureKeyStorage.getApiKey(AIProvider.AUROD) ?: ""
+        set(value) {
+            if (value.isNotBlank()) {
+                SecureKeyStorage.storeApiKey(AIProvider.AUROD, value)
+            } else {
+                SecureKeyStorage.removeApiKey(AIProvider.AUROD)
+            }
+        }
+
+    var aurodConfig: AurodConfig
+        get() = AurodConfig(
+            authToken = myState.aurodAuthToken,
+            cookie = myState.aurodCookie,
+            uid = myState.aurodUid,
+            account = myState.aurodAccount,
+            password = aurodPassword
+        )
+        set(value) {
+            myState.aurodAuthToken = value.authToken
+            myState.aurodCookie = value.cookie
+            myState.aurodUid = value.uid
+            myState.aurodAccount = value.account
+            if (value.password.isNotBlank()) {
+                aurodPassword = value.password
+            }
+        }
+
+    var aurodModel: String
+        get() = myState.aurodModel
+        set(value) { myState.aurodModel = value }
+
     /**
      * 获取指定Provider的配置
      */
@@ -326,6 +387,11 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
                 apiKey = nvidiaApiKey,
                 apiUrl = nvidiaApiUrl,
                 model = nvidiaModel
+            )
+            AIProvider.AUROD -> ProviderConfig(
+                apiKey = myState.aurodAuthToken,  // Aurod 使用 authToken 作为认证
+                apiUrl = AurodDefaults.defaultUrl,
+                model = aurodModel
             )
         }
     }
@@ -349,6 +415,10 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
                 nvidiaApiKey = config.apiKey
                 nvidiaApiUrl = config.apiUrl
                 nvidiaModel = config.model
+            }
+            AIProvider.AUROD -> {
+                myState.aurodAuthToken = config.apiKey
+                aurodModel = config.model
             }
         }
     }
@@ -397,6 +467,9 @@ class CopilotSettings : PersistentStateComponent<CopilotSettings.State> {
      * 检查指定Provider是否已配置
      */
     fun isProviderConfigured(provider: AIProvider): Boolean {
+        if (provider == AIProvider.AUROD) {
+            return myState.aurodAuthToken.isNotBlank()
+        }
         val config = getProviderConfig(provider)
         return config.apiKey.isNotBlank()
     }

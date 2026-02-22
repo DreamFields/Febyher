@@ -26,6 +26,9 @@
         <!-- LLM 服务管理器 -->
         <projectService serviceImplementation="org.febyher.llm.LLMServiceManager"/>
 
+        <!-- Aurod 会话管理器 -->
+        <projectService serviceImplementation="org.febyher.llm.aurod.AurodSessionManager"/>
+
         <!-- 应用设置 -->
         <applicationService serviceImplementation="org.febyher.settings.CopilotSettings"/>
         
@@ -92,6 +95,14 @@
                 class="org.febyher.actions.SelectFilesAction"
                 text="Febyher AI: 选择文件"
                 description="选择文件发送给 AI">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- Aurod 管理入口 -->
+        <action id="FebyherAI.AurodManage"
+                class="org.febyher.actions.AurodManageAction"
+                text="Febyher AI: Aurod 管理"
+                description="打开 Aurod AI 会话管理面板">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>

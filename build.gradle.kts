@@ -19,6 +19,18 @@ kotlin {
     jvmToolchain(21)
 }
 
+// Configure Java compilation with UTF-8 encoding
+tasks.withType<JavaCompile> {
+    options.encoding = "UTF-8"
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        freeCompilerArgs.set(listOf("-Xjvm-default=all"))
+    }
+}
+
 // Configure project's dependencies
 repositories {
     // 阿里云镜像

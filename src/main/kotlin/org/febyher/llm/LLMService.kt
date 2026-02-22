@@ -6,6 +6,7 @@ import org.febyher.chat.LLMMessage
 import org.febyher.context.CodeContext
 import org.febyher.settings.AIProvider
 import org.febyher.settings.CopilotSettings
+import org.febyher.llm.aurod.AurodLLMService
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -929,16 +930,17 @@ object LLMServiceFactory {
     /**
      * 注册的Provider映射 - 可扩展
      */
-    private val providerRegistry = mutableMapOf<AIProvider, (ProviderConfig) -> BaseLLMService>(
+    private val providerRegistry = mutableMapOf<AIProvider, (ProviderConfig) -> LLMService>(
         AIProvider.MOONSHOT to { config -> MoonshotLLMService(config) },
         AIProvider.DEEPSEEK to { config -> DeepSeekLLMService(config) },
-        AIProvider.NVIDIA to { config -> NvidiaLLMService(config) }
+        AIProvider.NVIDIA to { config -> NvidiaLLMService(config) },
+        AIProvider.AUROD to { config -> AurodLLMService(config) }
     )
     
     /**
      * 注册新的Provider
      */
-    fun registerProvider(provider: AIProvider, factory: (ProviderConfig) -> BaseLLMService) {
+    fun registerProvider(provider: AIProvider, factory: (ProviderConfig) -> LLMService) {
         providerRegistry[provider] = factory
         logger.info("Registered LLM provider: $provider")
     }
