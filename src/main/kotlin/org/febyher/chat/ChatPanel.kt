@@ -40,7 +40,7 @@ data class ModelItem(val provider: AIProvider, val modelName: String) {
 /**
  * 聊天面板主组件
  */
-class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, true), Disposable {
+class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, true), Disposable, ChatFacade {
 
     private val logger = Logger.getInstance(ChatPanel::class.java)
     private val chatSession = ChatSession()
@@ -53,11 +53,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
     private lateinit var loadingLabel: JLabel
     private lateinit var modelComboBox: JComboBox<ModelItem>
 
-    // Aurod 会话栏组件
-    private lateinit var aurodSessionBar: JPanel
-    private lateinit var aurodSessionLabel: JLabel
-    private lateinit var aurodNewSessionBtn: JButton
-    private lateinit var aurodSwitchSessionBtn: JButton
+    // Aurod 会话栏（子组件）
+    private lateinit var aurodSessionBar: AurodSessionBar
 
     // 流式响应状态
     @Volatile private var isStreaming = false
@@ -87,8 +84,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
 
         // Aurod 会话栏（默认隐藏，选择 Aurod Provider 时显示）
-        // 必须在 createInputPanel() 之前初始化，因为 updateModelComboBox() 会触发 onModelChanged() → updateAurodSessionBar()
-        aurodSessionBar = createAurodSessionBar()
+        aurodSessionBar = AurodSessionBar(project, { onAurodNewSession() }, { onAurodSwitchSession() })
         aurodSessionBar.isVisible = false
 
         // 输入区域（内部会触发 onModelChanged，需要 aurodSessionBar 已就绪）
@@ -105,85 +101,16 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         setContent(mainPanel)
     }
 
-    // ==================== Aurod 会话栏 ====================
-
-    /**
-     * 创建 Aurod 会话栏
-     * 包含：会话标题 | 新建会话按钮 | 切换会话按钮
-     */
-    private fun createAurodSessionBar(): JPanel {
-        return JPanel(BorderLayout()).apply {
-            background = JBColor(0xE8F5E9, 0x1B3A1B)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, JBColor(0xC8E6C9, 0x2E5B2E)),
-                JBUI.Borders.empty(6, 10)
-            )
-
-            // 左侧：会话信息
-            val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
-                isOpaque = false
-
-                add(JLabel("Aurod").apply {
-                    font = getChineseFont(Font.BOLD, 12)
-                    foreground = JBColor(0x2E7D32, 0x81C784)
-                })
-
-                aurodSessionLabel = JLabel("未选择会话 — 发送消息时将自动创建").apply {
-                    font = getChineseFont(Font.PLAIN, 12)
-                    foreground = JBColor(0x616161, 0xB0B0B0)
-                }
-                add(aurodSessionLabel)
-            }
-
-            // 右侧：操作按钮
-            val actionPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
-                isOpaque = false
-
-                aurodNewSessionBtn = JButton("新建会话").apply {
-                    font = getChineseFont(Font.PLAIN, 11)
-                    toolTipText = "创建新的 Aurod 对话会话"
-                    isFocusPainted = false
-                    margin = Insets(2, 8, 2, 8)
-                    addActionListener { onAurodNewSession() }
-                }
-                add(aurodNewSessionBtn)
-
-                aurodSwitchSessionBtn = JButton("切换会话").apply {
-                    font = getChineseFont(Font.PLAIN, 11)
-                    toolTipText = "从已有会话列表中选择"
-                    isFocusPainted = false
-                    margin = Insets(2, 8, 2, 8)
-                    addActionListener { onAurodSwitchSession() }
-                }
-                add(aurodSwitchSessionBtn)
-            }
-
-            add(infoPanel, BorderLayout.CENTER)
-            add(actionPanel, BorderLayout.EAST)
-        }
-    }
-
     /**
      * 更新 Aurod 会话栏显示
      */
     private fun updateAurodSessionBar() {
         val settings = CopilotSettings.getInstance()
         val isAurod = settings.currentProvider == AIProvider.AUROD
-
         aurodSessionBar.isVisible = isAurod
-
         if (isAurod) {
-            val manager = AurodSessionManager.getInstance(project)
-            val session = manager.currentSession
-            if (session != null) {
-                val name = if (session.sessionName.length > 30)
-                    session.sessionName.take(30) + "..." else session.sessionName
-                aurodSessionLabel.text = "会话: $name  |  模型: ${session.model}"
-                aurodSessionLabel.foreground = JBColor(0x2E7D32, 0x81C784)
-            } else {
-                aurodSessionLabel.text = "未选择会话 — 发送消息时将自动创建"
-                aurodSessionLabel.foreground = JBColor(0x616161, 0xB0B0B0)
-            }
+            val session = AurodSessionManager.getInstance(project).currentSession
+            aurodSessionBar.updateLabel(session?.sessionName, session?.model)
         }
     }
 
@@ -461,7 +388,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
             inputTextArea = JBTextArea().apply {
                 lineWrap = true
                 wrapStyleWord = true
-                font = getChineseFont(Font.PLAIN, 13)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 13)
                 rows = 3
                 border = JBUI.Borders.empty(8)
                 background = JBColor(0xFAFAFA, 0x3C3C3C)
@@ -508,12 +435,12 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 isOpaque = false
 
                 val modelLabel = JLabel("模型:").apply {
-                    font = getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                 }
                 add(modelLabel)
 
                 modelComboBox = JComboBox<ModelItem>().apply {
-                    font = getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                     preferredSize = Dimension(200, 26)
                     addActionListener { onModelChanged() }
                 }
@@ -531,16 +458,16 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 loadingLabel = JLabel("生成中...").apply {
                     isVisible = false
                     foreground = JBColor.GRAY
-                    font = getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                 }
 
                 val clearButton = JButton("清空").apply {
-                    font = getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                     addActionListener { clearChat() }
                 }
 
                 sendButton = JButton("发送").apply {
-                    font = getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                     addActionListener { sendMessage() }
                 }
 
@@ -837,7 +764,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                                 SwingUtilities.invokeLater {
                                     if (!isPaneActive(localContentPane)) return@invokeLater
                                     // 使用局部引用 localContentPane，不依赖可能被清空的实例变量
-                                    localContentPane.text = convertPlainTextToHtml(snapshot)
+                                    localContentPane.text = ChatMessageRenderer.convertPlainTextToHtml(snapshot)
                                     localContentPane.revalidate()
                                     localContentPane.repaint()
                                 }
@@ -849,9 +776,9 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                             logger.info("[ChatPanel] Stream complete: length=${fullResponse.length}")
                             ApplicationManager.getApplication().executeOnPooledThread {
                                 val html = if (fullResponse.isBlank()) {
-                                    convertMarkdownToHtml("（模型未返回内容，请重试）")
+                                    ChatMessageRenderer.convertMarkdownToHtml("（模型未返回内容，请重试）")
                                 } else {
-                                    convertMarkdownToHtml(fullResponse)
+                                    ChatMessageRenderer.convertMarkdownToHtml(fullResponse)
                                 }
                                 SwingUtilities.invokeLater {
                                     if (!isActiveStream(streamId)) return@invokeLater
@@ -883,7 +810,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                                     resetHtmlDocument(localContentPane, "stream-error")
                                     logger.debug("[ChatPanel][AurodRender] onError pane=${localContentPane.javaClass.simpleName} errorLen=${friendlyError.length}")
                                 }
-                                localContentPane.text = convertMarkdownToHtml(friendlyError)
+                                localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml(friendlyError)
                                 localContentPane.revalidate()
                                 localContentPane.repaint()
                                 messagesPanel.revalidate()
@@ -903,7 +830,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                             resetHtmlDocument(localContentPane, "stream-exception")
                             logger.debug("[ChatPanel][AurodRender] onException pane=${localContentPane.javaClass.simpleName} error=${e.javaClass.simpleName}")
                         }
-                        localContentPane.text = convertMarkdownToHtml("请求失败: ${e.message ?: "未知错误"}")
+                        localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("请求失败: ${e.message ?: "未知错误"}")
                         localContentPane.revalidate()
                         localContentPane.repaint()
                         messagesPanel.revalidate()
@@ -943,7 +870,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                         resetHtmlDocument(localContentPane, "stream-throwable")
                         logger.debug("[ChatPanel][AurodRender] onThrowable pane=${localContentPane.javaClass.simpleName} error=${error.javaClass.simpleName}")
                     }
-                    localContentPane.text = convertMarkdownToHtml("请求失败: ${error.message ?: "未知错误"}")
+                    localContentPane.text = ChatMessageRenderer.convertMarkdownToHtml("请求失败: ${error.message ?: "未知错误"}")
                     localContentPane.revalidate()
                     localContentPane.repaint()
                     messagesPanel.revalidate()
@@ -992,9 +919,9 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
      * 创建静态消息组件
      */
     private fun createMessageComponent(role: MessageRole, content: String, isAurodRenderer: Boolean = false): JComponent {
-        val bgColor = getMessageBgColor(role)
-        val accentColor = getMessageAccentColor(role)
-        val borderColor = getMessageBorderColor(role)
+        val bgColor = ChatMessageRenderer.getMessageBgColor(role)
+        val accentColor = ChatMessageRenderer.getMessageAccentColor(role)
+        val borderColor = ChatMessageRenderer.getMessageBorderColor(role)
 
         return JPanel(BorderLayout()).apply {
             background = JBColor.namedColor("Panel.background", Color.WHITE)
@@ -1009,8 +936,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 )
             }
 
-            val roleLabel = JLabel(getRoleDisplayName(role)).apply {
-                font = getChineseFont(Font.BOLD, 12)
+            val roleLabel = JLabel(ChatMessageRenderer.getRoleDisplayName(role)).apply {
+                font = ChatUiUtils.getChineseFont(Font.BOLD, 12)
                 foreground = accentColor
             }
 
@@ -1026,12 +953,12 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                     resetHtmlDocument(this, "static-message")
                     logger.debug("[ChatPanel][AurodRender] static message pane=${this.javaClass.simpleName} contentLen=${content.length}")
                 }
-                text = convertMarkdownToHtml(content)
+                text = ChatMessageRenderer.convertMarkdownToHtml(content)
                 isEditable = false
                 background = bgColor
                 isOpaque = role != MessageRole.ASSISTANT
                 border = null
-                font = getChineseFont(Font.PLAIN, 13)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 13)
             }
 
             bubblePanel.add(headerPanel, BorderLayout.NORTH)
@@ -1045,9 +972,9 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
      */
     private fun createStreamingMessageComponent(isAurodRenderer: Boolean): Pair<JComponent, JTextPane> {
         val role = MessageRole.ASSISTANT
-        val bgColor = getMessageBgColor(role)
-        val accentColor = getMessageAccentColor(role)
-        val borderColor = getMessageBorderColor(role)
+        val bgColor = ChatMessageRenderer.getMessageBgColor(role)
+        val accentColor = ChatMessageRenderer.getMessageAccentColor(role)
+        val borderColor = ChatMessageRenderer.getMessageBorderColor(role)
 
         lateinit var contentPane: JTextPane
 
@@ -1064,8 +991,8 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 )
             }
 
-            val roleLabel = JLabel(getRoleDisplayName(role)).apply {
-                font = getChineseFont(Font.BOLD, 12)
+            val roleLabel = JLabel(ChatMessageRenderer.getRoleDisplayName(role)).apply {
+                font = ChatUiUtils.getChineseFont(Font.BOLD, 12)
                 foreground = accentColor
             }
 
@@ -1080,12 +1007,12 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 if (isAurodRenderer) {
                     resetHtmlDocument(this, "stream-init")
                 }
-                text = convertMarkdownToHtml("")
+                text = ChatMessageRenderer.convertMarkdownToHtml("")
                 isEditable = false
                 background = bgColor
                 isOpaque = false
                 border = null
-                font = getChineseFont(Font.PLAIN, 13)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 13)
                 // 显式设置前景色，确保文本可见
                 foreground = JBColor.namedColor("Label.foreground", JBColor(Color.BLACK, Color.WHITE))
             }
@@ -1096,136 +1023,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
         }
 
         return Pair(messageComponent, contentPane)
-    }
-
-    private fun getMessageBgColor(role: MessageRole): JBColor = when (role) {
-        MessageRole.USER -> JBColor(0xE3F2FD, 0x1E3A5F)
-        MessageRole.ASSISTANT -> JBColor.namedColor("Panel.background", Color.WHITE)
-        MessageRole.SYSTEM -> JBColor(0xFFF8E1, 0x4A3728)
-    }
-
-    private fun getMessageAccentColor(role: MessageRole): JBColor = when (role) {
-        MessageRole.USER -> JBColor(0x1976D2, 0x64B5F6)
-        MessageRole.ASSISTANT -> JBColor(0x388E3C, 0x81C784)
-        MessageRole.SYSTEM -> JBColor(0xF57C00, 0xFFB74D)
-    }
-
-    private fun getMessageBorderColor(role: MessageRole): JBColor = when (role) {
-        MessageRole.USER -> JBColor(0x90CAF9, 0x1565C0)
-        MessageRole.ASSISTANT -> JBColor(0xE0E0E0, 0x555555)
-        MessageRole.SYSTEM -> JBColor(0xFFE082, 0x6D4C41)
-    }
-
-    private fun getRoleDisplayName(role: MessageRole): String {
-        return when (role) {
-            MessageRole.USER -> "用户"
-            MessageRole.ASSISTANT -> "AI助手"
-            MessageRole.SYSTEM -> "系统"
-        }
-    }
-
-    private fun convertMarkdownToHtml(markdown: String): String {
-        val sb = StringBuilder()
-        var lastIndex = 0
-
-        val codeBlockPattern = "```(\\w+)?\\n(.*?)\\n```".toRegex(RegexOption.DOT_MATCHES_ALL)
-
-        for (match in codeBlockPattern.findAll(markdown)) {
-            val beforeCode = markdown.substring(lastIndex, match.range.first)
-            sb.append(processInlineMarkdown(beforeCode))
-
-            val code = match.groupValues[2]
-            val escapedCode = escapeHtmlForCode(code)
-            // JTextPane 不支持 border-radius 和 overflow-x，移除这些属性
-            sb.append("<pre style='background-color:#2D2D2D;color:#E0E0E0;padding:12px;margin-top:8px;margin-bottom:8px;font-family:Consolas,Monaco,monospace;font-size:12px;'><code>")
-            sb.append(escapedCode)
-            sb.append("</code></pre>")
-
-            lastIndex = match.range.last + 1
-        }
-
-        if (lastIndex < markdown.length) {
-            sb.append(processInlineMarkdown(markdown.substring(lastIndex)))
-        }
-
-        var html = sb.toString()
-
-        if (html.isEmpty()) {
-            html = processInlineMarkdown(markdown)
-        }
-
-        // 根据当前主题动态设置文本颜色，确保在深色/浅色主题下都可见
-        val textColor = if (JBColor.isBright()) "#000000" else "#E0E0E0"
-
-        // JTextPane 支持的字体名称不应包含空格，使用单引号包裹或移除空格
-        return "<html><body style='font-family:serif;line-height:1.6;font-size:13px;margin:0;padding:0;color:$textColor;'>$html</body></html>"
-    }
-
-    /**
-     * 流式阶段使用的轻量 HTML 转换，避免频繁正则导致 UI 卡顿。
-     */
-    private fun convertPlainTextToHtml(text: String): String {
-        val escaped = escapeHtmlBasic(text).replace("\n", "<br>")
-        val textColor = if (JBColor.isBright()) "#000000" else "#E0E0E0"
-        return "<html><body style='font-family:serif;line-height:1.6;font-size:13px;margin:0;padding:0;color:$textColor;'>$escaped</body></html>"
-    }
-
-    private fun processInlineMarkdown(text: String): String {
-        var html = text
-
-        html = escapeHtmlBasic(html)
-        html = processInlineCode(html)
-        html = html.replace("\\*\\*(.+?)\\*\\*".toRegex(), "<b>$1</b>")
-        html = html.replace("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)".toRegex(), "<i>$1</i>")
-        html = html.replace("\n", "<br>")
-
-        return html
-    }
-
-    private fun escapeHtmlBasic(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    }
-
-    private fun processInlineCode(text: String): String {
-        val sb = StringBuilder()
-        var inCode = false
-        var codeStart = 0
-        var i = 0
-
-        while (i < text.length) {
-            if (text[i] == '`') {
-                if (!inCode) {
-                    sb.append(text.substring(codeStart, i))
-                    inCode = true
-                    codeStart = i + 1
-                } else {
-                    val code = text.substring(codeStart, i)
-                    // JTextPane 不支持 border-radius，移除该属性
-                    sb.append("<code style='background-color:#2D2D2D;color:#E0E0E0;padding:3px 6px;font-family:Consolas,Monaco,monospace;font-size:12px;'>")
-                    sb.append(escapeHtmlBasic(code))
-                    sb.append("</code>")
-                    inCode = false
-                    codeStart = i + 1
-                }
-            }
-            i++
-        }
-
-        if (codeStart < text.length) {
-            sb.append(text.substring(codeStart))
-        }
-
-        return sb.toString()
-    }
-
-    private fun escapeHtmlForCode(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
     }
 
     private fun setLoading(loading: Boolean) {
@@ -1251,7 +1048,7 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
      * 接收来自外部（如右键菜单）的消息
      * 将消息填入输入框并自动发送
      */
-    fun receiveExternalMessage(message: String) {
+    override fun receiveExternalMessage(message: String) {
         if (isStreaming) {
             NotificationService.warning(project, "请稍候", "当前正在处理请求，请等待完成后再发送")
             return
@@ -1341,31 +1138,6 @@ class ChatPanel(private val project: Project) : SimpleToolWindowPanel(false, tru
                 """.trimIndent()
             }
             else -> error
-        }
-    }
-
-    companion object {
-        fun getChineseFont(style: Int = Font.PLAIN, size: Int): Font {
-            val fontNames = arrayOf(
-                "Microsoft YaHei",
-                "SimHei",
-                "SimSun",
-                "Noto Sans CJK SC",
-                "Source Han Sans SC",
-                "WenQuanYi Micro Hei",
-                "PingFang SC",
-                "Heiti SC",
-                "STHeiti"
-            )
-
-            for (fontName in fontNames) {
-                val font = Font(fontName, style, size)
-                if (font.family != "Dialog") {
-                    return font
-                }
-            }
-
-            return Font(Font.DIALOG, style, size)
         }
     }
 }

@@ -31,13 +31,13 @@ class AurodActionPanel(private val project: Project) : JPanel(FlowLayout(FlowLay
 
     // 状态标签
     private val statusLabel = JLabel("未连接").apply {
-        font = ChatPanel.getChineseFont(Font.PLAIN, 11)
+        font = ChatUiUtils.getChineseFont(Font.PLAIN, 11)
         foreground = JBColor.GRAY
     }
 
     // 当前会话标签
     private val sessionLabel = JLabel("无会话").apply {
-        font = ChatPanel.getChineseFont(Font.PLAIN, 11)
+        font = ChatUiUtils.getChineseFont(Font.PLAIN, 11)
         foreground = JBColor(0x1976D2, 0x64B5F6)
     }
 
@@ -83,7 +83,7 @@ class AurodActionPanel(private val project: Project) : JPanel(FlowLayout(FlowLay
 
     private fun createButton(text: String, tooltip: String, action: () -> Unit): JButton {
         return JButton(text).apply {
-            font = ChatPanel.getChineseFont(Font.PLAIN, 11)
+            font = ChatUiUtils.getChineseFont(Font.PLAIN, 11)
             toolTipText = tooltip
             isFocusPainted = false
             margin = Insets(2, 6, 2, 6)
@@ -529,7 +529,7 @@ class AurodSessionListDialog(
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(10)
             add(JLabel("共 ${sessions.size} 个会话，双击或点击「选择」使用").apply {
-                font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                 foreground = JBColor.GRAY
                 border = JBUI.Borders.emptyBottom(8)
             }, BorderLayout.NORTH)
@@ -563,7 +563,7 @@ private class SessionListCellRenderer : ListCellRenderer<AurodSession> {
 
             // 上方：会话名称
             val nameLabel = JLabel(value.sessionName).apply {
-                font = ChatPanel.getChineseFont(Font.BOLD, 13)
+                font = ChatUiUtils.getChineseFont(Font.BOLD, 13)
                 foreground = if (isSelected) JBColor(0x1565C0, 0x90CAF9) else JBColor.foreground()
             }
 
@@ -574,7 +574,7 @@ private class SessionListCellRenderer : ListCellRenderer<AurodSession> {
                 append("  |  ID: ${value.sessionId}")
             }
             val infoLabel = JLabel(infoText).apply {
-                font = ChatPanel.getChineseFont(Font.PLAIN, 11)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 11)
                 foreground = JBColor.GRAY
             }
 
@@ -639,7 +639,7 @@ class AurodChatRecordsDialog(
 
         return JPanel(BorderLayout()).apply {
             add(JLabel("会话: ${session.sessionName}  |  模型: ${session.model}  |  共 ${records.size} 条记录").apply {
-                font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                 foreground = JBColor.GRAY
                 border = JBUI.Borders.empty(0, 10, 8, 10)
             }, BorderLayout.NORTH)
@@ -664,7 +664,7 @@ class AurodChatRecordsDialog(
             val header = JPanel(BorderLayout()).apply {
                 isOpaque = false
                 add(JLabel(role).apply {
-                    font = ChatPanel.getChineseFont(Font.BOLD, 12)
+                    font = ChatUiUtils.getChineseFont(Font.BOLD, 12)
                     foreground = JBColor(0x1976D2, 0x64B5F6)
                 }, BorderLayout.WEST)
 
@@ -674,7 +674,7 @@ class AurodChatRecordsDialog(
                 }
                 if (rightInfo.isNotEmpty()) {
                     add(JLabel(rightInfo).apply {
-                        font = ChatPanel.getChineseFont(Font.PLAIN, 10)
+                        font = ChatUiUtils.getChineseFont(Font.PLAIN, 10)
                         foreground = JBColor.GRAY
                     }, BorderLayout.EAST)
                 }
@@ -685,7 +685,7 @@ class AurodChatRecordsDialog(
                 isEditable = false
                 lineWrap = true
                 wrapStyleWord = true
-                font = ChatPanel.getChineseFont(Font.PLAIN, 13)
+                font = ChatUiUtils.getChineseFont(Font.PLAIN, 13)
                 isOpaque = false
                 border = JBUI.Borders.emptyTop(4)
             }
@@ -730,11 +730,11 @@ class AurodModelListDialog(
         }.toTypedArray()
 
         val table = javax.swing.JTable(data, columns).apply {
-            font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+            font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
             rowHeight = 28
             setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
             autoResizeMode = javax.swing.JTable.AUTO_RESIZE_ALL_COLUMNS
-            tableHeader.font = ChatPanel.getChineseFont(Font.BOLD, 12)
+            tableHeader.font = ChatUiUtils.getChineseFont(Font.BOLD, 12)
         }
 
         val scrollPane = JBScrollPane(table).apply {
@@ -747,15 +747,15 @@ class AurodModelListDialog(
             val infoPanel = JPanel(FlowLayout(FlowLayout.LEFT, 10, 0)).apply {
                 isOpaque = false
                 add(JLabel("共 ${result.models.size} 个模型").apply {
-                    font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                 })
                 add(JLabel("|  默认模型: ${result.defaultModel}").apply {
-                    font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+                    font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                     foreground = JBColor(0x1976D2, 0x64B5F6)
                 })
                 if (result.thinkModel.isNotBlank()) {
                     add(JLabel("|  思考模型: ${result.thinkModel}").apply {
-                        font = ChatPanel.getChineseFont(Font.PLAIN, 12)
+                        font = ChatUiUtils.getChineseFont(Font.PLAIN, 12)
                         foreground = JBColor(0x388E3C, 0x81C784)
                     })
                 }
@@ -794,7 +794,7 @@ class AurodResultDialog(
             isEditable = false
             lineWrap = true
             wrapStyleWord = true
-            font = ChatPanel.getChineseFont(Font.PLAIN, 13)
+            font = ChatUiUtils.getChineseFont(Font.PLAIN, 13)
             border = JBUI.Borders.empty(10)
         }
 

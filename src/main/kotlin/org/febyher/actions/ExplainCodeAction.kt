@@ -5,7 +5,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
-import org.febyher.chat.ChatPanel
+import org.febyher.chat.ChatFacade
 import org.febyher.notification.NotificationService
 
 /**
@@ -74,12 +74,12 @@ class ExplainCodeAction : AnAction() {
         toolWindow.activate {
             // 获取 ChatPanel 并发送消息
             val content = toolWindow.contentManager.getContent(0)
-            val chatPanel = content?.component as? ChatPanel
-            
-            if (chatPanel != null) {
-                chatPanel.receiveExternalMessage(message)
+            val chatFacade = content?.component as? ChatFacade
+
+            if (chatFacade != null) {
+                chatFacade.receiveExternalMessage(message)
             } else {
-                NotificationService.error(project, "发送失败", "无法访问聊天面板")
+                NotificationService.error(project, "发送失败", "请先打开 Febyher AI 聊天面板")
             }
         }
     }
